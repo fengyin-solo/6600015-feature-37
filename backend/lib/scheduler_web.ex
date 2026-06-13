@@ -33,8 +33,9 @@ defmodule SchedulerWeb.TaskController do
     json(conn, %{tasks: Enum.map(tasks, &Map.from_struct/1)})
   end
 
-  def create(conn, %{"name" => name}) do
-    task = Scheduler.TaskManager.add_task(name)
+  def create(conn, %{"name" => name} = params) do
+    preferred_node = Map.get(params, "preferred_node")
+    task = Scheduler.TaskManager.add_task(name, preferred_node)
     json(conn, %{task: Map.from_struct(task)})
   end
 

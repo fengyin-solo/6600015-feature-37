@@ -1,8 +1,8 @@
 import { useState } from 'react'
-import { Layout, Tabs, Statistic, Row, Col, Card, Tag, Button, Input, Table, Drawer, Descriptions, Space, Progress } from 'antd'
-import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts'
+import { Layout, Tabs, Statistic, Row, Col, Card, Tag, Button, Input, Table, Drawer, Descriptions, Space, Progress, Select, Tooltip } from 'antd'
+import { LineChart, Line, XAxis, YAxis, Tooltip as RTooltip, ResponsiveContainer, AreaChart, Area } from 'recharts'
 import { useTaskStore } from '../store/tasks'
-import type { Task, TaskStatus } from '../types'
+import type { Task, TaskStatus, NodeAssignedBy } from '../types'
 
 const { Header, Content } = Layout
 
@@ -10,16 +10,39 @@ const STATUS_COLORS: Record<TaskStatus, string> = {
   pending: 'default', running: 'processing', success: 'success', failed: 'error', retry: 'warning'
 }
 
+const ASSIGNED_BY_META: Record<NodeAssignedBy, { color: string; text: string; tip: string }> = {
+  preferred: { color: 'blue', text: '✓ 首选', tip: '按用户指定节点分配' },
+  fallback: { color: 'orange', text: '↩ 回退', tip: '首选节点不合适，已自动回退' },
+  random: { color: 'default', text: '○ 随机', tip: '系统随机分配节点' },
+}
+
 export default function Dashboard() {
   const store = useTaskStore()
   const [newTaskName, setNewTaskName] = useState('')
+  const [preferredNode, setPreferredNode] = useState<string | undefined>(undefined)
   const [drawerOpen, setDrawerOpen] = useState(false)
+
+  const workerNodes = store.nodes.filter(n => n.type === 'worker')
 
   const taskColumns = [
     { title: 'ID', dataIndex: 'id', key: 'id', width: 100 },
     { title: '名称', dataIndex: 'name', key: 'name' },
     { title: '状态', dataIndex: 'status', key: 'status', render: (s: TaskStatus) => <Tag color={STATUS_COLORS[s]}>{s}</Tag> },
-    { title: '节点', dataIndex: 'node', key: 'node' },
+    {
+      title: '执行节点', key: 'node', render: (_: any, r: Task) => {
+        const meta = r.nodeAssignedBy ? ASSIGNED_BY_META[r.nodeAssignedBy] : null
+        return (
+          <Space size={4}>
+            <span>{r.node}</span>
+            {meta && (
+              <Tooltip title={meta.tip}>
+                <Tag color={meta.color} style={{ marginInlineEnd: 0 }}>{meta.text}</Tag>
+              </Tooltip>
+            )}
+          </Space>
+        )
+      }
+    },
     { title: '重试', key: 'retries', render: (_: any, r: Task) => `${r.retries}/${r.maxRetries}` },
     { title: '耗时', key: 'duration', render: (_: any, r: Task) => r.duration ? `${(r.duration / 1000).toFixed(1)}s` : '-' },
     { title: '操作', key: 'actions', render: (_: any, r: Task) => (
@@ -39,9 +62,46 @@ export default function Dashboard() {
     <Layout style={{ minHeight: '100vh' }}>
       <Header style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
         <h1 style={{ color: 'white', margin: 0, fontSize: 18 }}>🔧 分布式任务调度与监控平台</h1>
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
-          <Input placeholder="任务名称" value={newTaskName} onChange={e => setNewTaskName(e.target.value)} style={{ width: 160 }} />
-          <Button type="primary" onClick={() => { if (newTaskName) { store.addTask(newTaskName); setNewTaskName('') } }}>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
+          <Input
+            placeholder="任务名称"
+            value={newTaskName}
+            onChange={e => setNewTaskName(e.target.value)}
+            style={{ width: 160 }}
+            onPressEnter={() => {
+              if (newTaskName) {
+                store.addTask(newTaskName, preferredNode)
+                setNewTaskName('')
+              }
+            }}
+          />
+          <Select
+            placeholder="目标节点 (可选)"
+            allowClear
+            value={preferredNode}
+            onChange={v => setPreferredNode(v)}
+            style={{ width: 180 }}
+            options={workerNodes.map(n => ({
+              label: (
+                <Space size={8}>
+                  <span>{n.name}</span>
+                  <Tag color={n.status === 'online' ? 'green' : n.status === 'overloaded' ? 'orange' : 'red'} style={{ fontSize: 11, padding: '0 4px', lineHeight: '18px' }}>
+                    {n.status}
+                  </Tag>
+                </Space>
+              ),
+              value: n.name,
+            }))}
+          />
+          <Button
+            type="primary"
+            onClick={() => {
+              if (newTaskName) {
+                store.addTask(newTaskName, preferredNode)
+                setNewTaskName('')
+              }
+            }}
+          >
             添加任务
           </Button>
         </div>
@@ -125,7 +185,21 @@ export default function Dashboard() {
                 <Descriptions.Item label="ID">{store.selectedTask.id}</Descriptions.Item>
                 <Descriptions.Item label="名称">{store.selectedTask.name}</Descriptions.Item>
                 <Descriptions.Item label="状态"><Tag color={STATUS_COLORS[store.selectedTask.status]}>{store.selectedTask.status}</Tag></Descriptions.Item>
-                <Descriptions.Item label="执行节点">{store.selectedTask.node}</Descriptions.Item>
+                <Descriptions.Item label="执行节点">
+                  <Space size={4}>
+                    <span>{store.selectedTask.node}</span>
+                    {store.selectedTask.nodeAssignedBy && (
+                      <Tag color={ASSIGNED_BY_META[store.selectedTask.nodeAssignedBy].color}>
+                        {ASSIGNED_BY_META[store.selectedTask.nodeAssignedBy].text}
+                      </Tag>
+                    )}
+                  </Space>
+                </Descriptions.Item>
+                {store.selectedTask.nodeAssignedBy && (
+                  <Descriptions.Item label="分配说明">
+                    {ASSIGNED_BY_META[store.selectedTask.nodeAssignedBy].tip}
+                  </Descriptions.Item>
+                )}
                 <Descriptions.Item label="重试次数">{store.selectedTask.retries}/{store.selectedTask.maxRetries}</Descriptions.Item>
                 <Descriptions.Item label="创建时间">{new Date(store.selectedTask.createdAt).toLocaleString()}</Descriptions.Item>
                 <Descriptions.Item label="耗时">{store.selectedTask.duration ? `${(store.selectedTask.duration / 1000).toFixed(1)}s` : '-'}</Descriptions.Item>

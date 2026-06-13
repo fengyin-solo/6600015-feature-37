@@ -1,5 +1,6 @@
 export type TaskStatus = 'pending' | 'running' | 'success' | 'failed' | 'retry'
 export type NodeType = 'scheduler' | 'worker'
+export type NodeAssignedBy = 'preferred' | 'fallback' | 'random'
 
 export interface Task {
   id: string
@@ -13,6 +14,7 @@ export interface Task {
   maxRetries: number
   duration?: number
   logs: string[]
+  nodeAssignedBy?: NodeAssignedBy
 }
 
 export interface ClusterNode {
