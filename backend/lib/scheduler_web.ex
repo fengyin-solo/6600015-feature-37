@@ -1,6 +1,39 @@
+defmodule SchedulerWeb.CORS do
+  import Plug.Conn
+
+  @origins ["http://localhost:5173", "http://localhost:3000", "http://localhost:8080", "http://127.0.0.1:5173", "http://127.0.0.1:3000"]
+
+  def init(opts), do: opts
+
+  def call(conn, _opts) do
+    origin = get_req_header(conn, "origin") |> List.first()
+
+    if origin in @origins do
+      conn
+      |> put_resp_header("access-control-allow-origin", origin)
+      |> put_resp_header("access-control-allow-methods", "GET, POST, PUT, DELETE, OPTIONS")
+      |> put_resp_header("access-control-allow-headers", "Content-Type, Authorization")
+      |> put_resp_header("access-control-allow-credentials", "true")
+      |> handle_preflight()
+    else
+      conn
+    end
+  end
+
+  defp handle_preflight(%{method: "OPTIONS"} = conn) do
+    conn
+    |> put_resp_content_type("text/plain")
+    |> send_resp(204, "")
+    |> halt()
+  end
+
+  defp handle_preflight(conn), do: conn
+end
+
 defmodule SchedulerWeb.Endpoint do
   use Phoenix.Endpoint, otp_app: :scheduler
 
+  plug SchedulerWeb.CORS
   plug Plug.Static, at: "/", from: :scheduler, gzip: false
   plug Plug.Parsers, parsers: [:json], pass: [], json_decoder: Jason
   plug SchedulerWeb.Router

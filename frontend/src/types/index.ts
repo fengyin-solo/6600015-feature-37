@@ -15,6 +15,7 @@ export interface Task {
   duration?: number
   logs: string[]
   nodeAssignedBy?: NodeAssignedBy
+  preferredNode?: string | null
 }
 
 export interface ClusterNode {

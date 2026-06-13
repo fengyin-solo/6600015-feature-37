@@ -4,24 +4,42 @@ import type { Task, ClusterNode, MetricsSnapshot, TaskStatus, NodeAssignedBy } f
 const API_BASE = 'http://localhost:4000/api'
 
 function mockNodes(): ClusterNode[] {
-  return Array.from({ length: 5 }, (_, i) => ({
-    id: `node-${i + 1}`,
-    name: i === 0 ? 'scheduler-main' : `worker-${i}`,
-    type: i === 0 ? 'scheduler' as const : 'worker' as const,
-    status: Math.random() > 0.1 ? 'online' as const : 'overloaded' as const,
+  const scheduler: ClusterNode = {
+    id: 'node-1',
+    name: 'scheduler-main',
+    type: 'scheduler',
+    status: 'online',
+    cpu: 15 + Math.random() * 25,
+    memory: 25 + Math.random() * 30,
+    tasks: 0,
+    uptime: 3600 + Math.random() * 86400,
+  }
+
+  const workers: ClusterNode[] = Array.from({ length: 4 }, (_, i) => ({
+    id: `node-${i + 2}`,
+    name: `worker-${i + 1}`,
+    type: 'worker' as const,
+    status: Math.random() > 0.15 ? 'online' as const : 'overloaded' as const,
     cpu: 20 + Math.random() * 60,
     memory: 30 + Math.random() * 50,
-    tasks: Math.floor(Math.random() * 8),
-    uptime: 3600 + Math.floor(Math.random() * 86400),
+    tasks: Math.floor(Math.random() * 5),
+    uptime: 3600 + Math.random() * 86400,
   }))
+
+  return [scheduler, ...workers]
+}
+
+function getWorkerNodes(nodes: ClusterNode[]): ClusterNode[] {
+  return nodes.filter(n => n.type === 'worker')
 }
 
 function mockTasks(nodes: ClusterNode[]): Task[] {
+  const workerNodes = getWorkerNodes(nodes)
   const names = ['data_sync', 'email_batch', 'report_gen', 'cache_warm', 'log_rotate', 'db_backup', 'index_rebuild', 'health_check']
-  return Array.from({ length: 12 }, (_, i) => {
+  return Array.from({ length: 8 }, (_, i) => {
     const status: TaskStatus[] = ['pending', 'running', 'success', 'failed']
     const s = status[Math.floor(Math.random() * 4)]
-    const node = nodes[Math.floor(Math.random() * nodes.length)]
+    const node = workerNodes[Math.floor(Math.random() * workerNodes.length)]
     return {
       id: `task-${1000 + i}`,
       name: names[i % names.length],
@@ -35,43 +53,56 @@ function mockTasks(nodes: ClusterNode[]): Task[] {
       duration: s === 'success' ? 1000 + Math.floor(Math.random() * 30000) : undefined,
       logs: [`[INFO] Task ${names[i % names.length]} started`, `[INFO] Processing on ${node.name}`],
       nodeAssignedBy: 'random',
+      preferredNode: null,
     }
   })
-}
-
-const initialNodes = mockNodes()
-
-function getWorkerNodes(nodes: ClusterNode[]): ClusterNode[] {
-  return nodes.filter(n => n.type === 'worker')
 }
 
 function isNodeSuitable(nodeName: string, tasks: Task[], nodes: ClusterNode[]): boolean {
   const node = nodes.find(n => n.name === nodeName)
   if (!node || node.type !== 'worker') return false
   if (node.status === 'offline') return false
-  const runningCount = tasks.filter(t => t.node === nodeName && (t.status === 'pending' || t.status === 'running')).length
-  const loadHigh = node.cpu > 85 || node.memory > 85 || node.status === 'overloaded'
-  return runningCount < 6 && !loadHigh
+  if (node.status === 'overloaded') return false
+  const activeCount = tasks.filter(t => t.node === nodeName && (t.status === 'pending' || t.status === 'running')).length
+  return activeCount < 6
 }
 
-function assignNode(preferredNode: string | undefined, tasks: Task[], nodes: ClusterNode[]): { node: string; assignedBy: NodeAssignedBy; extraLogs: string[] } {
+function pickSuitableNode(tasks: Task[], nodes: ClusterNode[]): string {
+  const workers = getWorkerNodes(nodes)
+  const suitable = workers.filter(n => isNodeSuitable(n.name, tasks, nodes))
+  const pool = suitable.length > 0 ? suitable : workers
+  return pool[Math.floor(Math.random() * pool.length)].name
+}
+
+interface AssignResult {
+  node: string
+  assignedBy: NodeAssignedBy
+  extraLogs: string[]
+  preferredNode: string | null
+}
+
+function assignNode(preferredNode: string | undefined, tasks: Task[], nodes: ClusterNode[]): AssignResult {
   const workers = getWorkerNodes(nodes)
   if (workers.length === 0) {
-    return { node: 'unknown', assignedBy: 'random', extraLogs: [] }
+    return { node: 'unknown', assignedBy: 'random', extraLogs: [], preferredNode: null }
   }
 
   if (!preferredNode) {
-    const random = workers[Math.floor(Math.random() * workers.length)]
-    return { node: random.name, assignedBy: 'random', extraLogs: [] }
+    const node = pickSuitableNode(tasks, nodes)
+    return { node, assignedBy: 'random', extraLogs: [], preferredNode: null }
   }
 
   const validWorker = workers.find(n => n.name === preferredNode)
   if (!validWorker) {
-    const fallback = workers[Math.floor(Math.random() * workers.length)]
+    const fallback = pickSuitableNode(tasks, nodes)
     return {
-      node: fallback.name,
-      assignedBy: 'random',
-      extraLogs: [`[WARN] Preferred node "${preferredNode}" invalid, randomly assigned to ${fallback.name}`],
+      node: fallback,
+      assignedBy: 'fallback',
+      extraLogs: [
+        `[WARN] 指定节点 "${preferredNode}" 不存在`,
+        `[INFO] 自动回退到节点 ${fallback}`,
+      ],
+      preferredNode: preferredNode,
     }
   }
 
@@ -79,19 +110,22 @@ function assignNode(preferredNode: string | undefined, tasks: Task[], nodes: Clu
     return {
       node: preferredNode,
       assignedBy: 'preferred',
-      extraLogs: [`[INFO] Assigned to preferred node ${preferredNode}`],
+      extraLogs: [`[INFO] 优先分配到指定节点 ${preferredNode}`],
+      preferredNode: preferredNode,
     }
   }
 
-  const suitableCandidates = workers.filter(n => isNodeSuitable(n.name, tasks, nodes))
-  const fallback = suitableCandidates.length > 0
-    ? suitableCandidates[Math.floor(Math.random() * suitableCandidates.length)]
-    : workers[Math.floor(Math.random() * workers.length)]
+  const reason = validWorker.status === 'overloaded' ? '节点过载' : '任务队列已满'
+  const fallback = pickSuitableNode(tasks, nodes)
 
   return {
-    node: fallback.name,
+    node: fallback,
     assignedBy: 'fallback',
-    extraLogs: [`[WARN] Preferred node ${preferredNode} overloaded, fell back to ${fallback.name}`],
+    extraLogs: [
+      `[WARN] 首选节点 ${preferredNode} 不可用（${reason}）`,
+      `[INFO] 自动回退到节点 ${fallback}`,
+    ],
+    preferredNode: preferredNode,
   }
 }
 
@@ -117,11 +151,14 @@ async function apiAddTask(name: string, preferredNode?: string): Promise<Task | 
       maxRetries: t.max_retries,
       logs: t.logs,
       nodeAssignedBy: t.node_assigned_by as NodeAssignedBy,
+      preferredNode: t.preferred_node ?? null,
     }
   } catch {
     return null
   }
 }
+
+const initialNodes = mockNodes()
 
 interface TaskStore {
   tasks: Task[]
@@ -156,17 +193,18 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       return
     }
 
-    const { node, assignedBy, extraLogs } = assignNode(preferredNode, get().tasks, get().nodes)
+    const result = assignNode(preferredNode, get().tasks, get().nodes)
     const task: Task = {
       id: `task-${Date.now()}`,
       name,
       status: 'pending',
-      node,
+      node: result.node,
       createdAt: Date.now(),
       retries: 0,
       maxRetries: 3,
-      logs: [`[INFO] Task ${name} queued`, ...extraLogs],
-      nodeAssignedBy: assignedBy,
+      logs: [`[INFO] Task ${name} queued`, ...result.extraLogs],
+      nodeAssignedBy: result.assignedBy,
+      preferredNode: result.preferredNode,
     }
     set({ tasks: [task, ...get().tasks] })
   },

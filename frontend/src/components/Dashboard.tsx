@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Layout, Tabs, Statistic, Row, Col, Card, Tag, Button, Input, Table, Drawer, Descriptions, Space, Progress, Select, Tooltip } from 'antd'
+import { Layout, Tabs, Statistic, Row, Col, Card, Tag, Button, Input, Table, Drawer, Descriptions, Space, Progress, Select, Tooltip, Alert } from 'antd'
 import { LineChart, Line, XAxis, YAxis, Tooltip as RTooltip, ResponsiveContainer, AreaChart, Area } from 'recharts'
 import { useTaskStore } from '../store/tasks'
 import type { Task, TaskStatus, NodeAssignedBy } from '../types'
@@ -10,10 +10,10 @@ const STATUS_COLORS: Record<TaskStatus, string> = {
   pending: 'default', running: 'processing', success: 'success', failed: 'error', retry: 'warning'
 }
 
-const ASSIGNED_BY_META: Record<NodeAssignedBy, { color: string; text: string; tip: string }> = {
-  preferred: { color: 'blue', text: '✓ 首选', tip: '按用户指定节点分配' },
-  fallback: { color: 'orange', text: '↩ 回退', tip: '首选节点不合适，已自动回退' },
-  random: { color: 'default', text: '○ 随机', tip: '系统随机分配节点' },
+const ASSIGNED_BY_META: Record<NodeAssignedBy, { color: string; tagColor: string; text: string; tip: string; icon: string }> = {
+  preferred: { color: '#1890ff', tagColor: 'blue', text: '首选分配', tip: '按用户指定的节点分配', icon: '✓' },
+  fallback: { color: '#fa8c16', tagColor: 'orange', text: '自动回退', tip: '首选节点不合适，已自动回退到其他节点', icon: '↩' },
+  random: { color: '#8c8c8c', tagColor: 'default', text: '随机分配', tip: '系统随机分配节点', icon: '○' },
 }
 
 export default function Dashboard() {
@@ -21,23 +21,44 @@ export default function Dashboard() {
   const [newTaskName, setNewTaskName] = useState('')
   const [preferredNode, setPreferredNode] = useState<string | undefined>(undefined)
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
 
   const workerNodes = store.nodes.filter(n => n.type === 'worker')
+
+  const handleAddTask = async () => {
+    if (!newTaskName || submitting) return
+    setSubmitting(true)
+    try {
+      await store.addTask(newTaskName, preferredNode)
+      setNewTaskName('')
+    } finally {
+      setSubmitting(false)
+    }
+  }
 
   const taskColumns = [
     { title: 'ID', dataIndex: 'id', key: 'id', width: 100 },
     { title: '名称', dataIndex: 'name', key: 'name' },
     { title: '状态', dataIndex: 'status', key: 'status', render: (s: TaskStatus) => <Tag color={STATUS_COLORS[s]}>{s}</Tag> },
     {
-      title: '执行节点', key: 'node', render: (_: any, r: Task) => {
+      title: '执行节点', key: 'node', width: 220, render: (_: any, r: Task) => {
         const meta = r.nodeAssignedBy ? ASSIGNED_BY_META[r.nodeAssignedBy] : null
         return (
-          <Space size={4}>
-            <span>{r.node}</span>
-            {meta && (
-              <Tooltip title={meta.tip}>
-                <Tag color={meta.color} style={{ marginInlineEnd: 0 }}>{meta.text}</Tag>
-              </Tooltip>
+          <Space size={6} direction="vertical" style={{ width: '100%' }}>
+            <Space size={4}>
+              <span style={{ fontWeight: 500 }}>{r.node}</span>
+              {meta && (
+                <Tooltip title={meta.tip}>
+                  <Tag color={meta.tagColor} style={{ marginInlineEnd: 0, fontSize: 11 }}>
+                    {meta.icon} {meta.text}
+                  </Tag>
+                </Tooltip>
+              )}
+            </Space>
+            {r.nodeAssignedBy === 'fallback' && r.preferredNode && (
+              <div style={{ fontSize: 11, color: '#fa8c16', lineHeight: 1.4 }}>
+                首选: {r.preferredNode} → 实际: {r.node}
+              </div>
             )}
           </Space>
         )
@@ -68,39 +89,39 @@ export default function Dashboard() {
             value={newTaskName}
             onChange={e => setNewTaskName(e.target.value)}
             style={{ width: 160 }}
-            onPressEnter={() => {
-              if (newTaskName) {
-                store.addTask(newTaskName, preferredNode)
-                setNewTaskName('')
-              }
-            }}
+            onPressEnter={handleAddTask}
+            disabled={submitting}
           />
           <Select
             placeholder="目标节点 (可选)"
             allowClear
             value={preferredNode}
             onChange={v => setPreferredNode(v)}
-            style={{ width: 180 }}
+            style={{ width: 200 }}
+            disabled={submitting}
             options={workerNodes.map(n => ({
               label: (
-                <Space size={8}>
-                  <span>{n.name}</span>
-                  <Tag color={n.status === 'online' ? 'green' : n.status === 'overloaded' ? 'orange' : 'red'} style={{ fontSize: 11, padding: '0 4px', lineHeight: '18px' }}>
-                    {n.status}
+                <Space size={8} style={{ width: '100%', justifyContent: 'space-between' }}>
+                  <span style={{ fontWeight: n.status === 'online' ? 500 : 400, opacity: n.status === 'online' ? 1 : 0.6 }}>
+                    {n.name}
+                  </span>
+                  <Tag
+                    color={n.status === 'online' ? 'green' : n.status === 'overloaded' ? 'orange' : 'red'}
+                    style={{ fontSize: 11, padding: '0 6px', lineHeight: '18px', marginInlineEnd: 0 }}
+                  >
+                    {n.status === 'online' ? '空闲' : n.status === 'overloaded' ? '过载' : '离线'}
                   </Tag>
                 </Space>
               ),
               value: n.name,
+              disabled: n.status !== 'online',
             }))}
           />
           <Button
             type="primary"
-            onClick={() => {
-              if (newTaskName) {
-                store.addTask(newTaskName, preferredNode)
-                setNewTaskName('')
-              }
-            }}
+            onClick={handleAddTask}
+            loading={submitting}
+            disabled={!newTaskName}
           >
             添加任务
           </Button>
@@ -178,23 +199,52 @@ export default function Dashboard() {
         ]} />
 
         {/* Task Detail Drawer */}
-        <Drawer title="任务详情" open={drawerOpen} onClose={() => setDrawerOpen(false)} width={480}>
+        <Drawer title="任务详情" open={drawerOpen} onClose={() => setDrawerOpen(false)} width={520}>
           {store.selectedTask && (
             <>
+              {store.selectedTask.nodeAssignedBy === 'fallback' && (
+                <Alert
+                  message="节点自动回退"
+                  description={
+                    <Space direction="vertical" size={2} style={{ width: '100%' }}>
+                      <div>首选节点: <b>{store.selectedTask.preferredNode}</b></div>
+                      <div>实际节点: <b>{store.selectedTask.node}</b></div>
+                      <div style={{ fontSize: 12, color: '#8c8c8c' }}>
+                        首选节点不可用，系统已自动分配到其他可用节点
+                      </div>
+                    </Space>
+                  }
+                  type="warning"
+                  showIcon
+                  style={{ marginBottom: 16 }}
+                />
+              )}
+              {store.selectedTask.nodeAssignedBy === 'preferred' && (
+                <Alert
+                  message="已按首选节点分配"
+                  description={`任务已分配到您指定的节点 ${store.selectedTask.node}`}
+                  type="info"
+                  showIcon
+                  style={{ marginBottom: 16 }}
+                />
+              )}
               <Descriptions column={1} bordered size="small">
                 <Descriptions.Item label="ID">{store.selectedTask.id}</Descriptions.Item>
                 <Descriptions.Item label="名称">{store.selectedTask.name}</Descriptions.Item>
                 <Descriptions.Item label="状态"><Tag color={STATUS_COLORS[store.selectedTask.status]}>{store.selectedTask.status}</Tag></Descriptions.Item>
                 <Descriptions.Item label="执行节点">
                   <Space size={4}>
-                    <span>{store.selectedTask.node}</span>
+                    <span style={{ fontWeight: 500 }}>{store.selectedTask.node}</span>
                     {store.selectedTask.nodeAssignedBy && (
-                      <Tag color={ASSIGNED_BY_META[store.selectedTask.nodeAssignedBy].color}>
-                        {ASSIGNED_BY_META[store.selectedTask.nodeAssignedBy].text}
+                      <Tag color={ASSIGNED_BY_META[store.selectedTask.nodeAssignedBy].tagColor}>
+                        {ASSIGNED_BY_META[store.selectedTask.nodeAssignedBy].icon} {ASSIGNED_BY_META[store.selectedTask.nodeAssignedBy].text}
                       </Tag>
                     )}
                   </Space>
                 </Descriptions.Item>
+                {store.selectedTask.preferredNode && (
+                  <Descriptions.Item label="首选节点">{store.selectedTask.preferredNode}</Descriptions.Item>
+                )}
                 {store.selectedTask.nodeAssignedBy && (
                   <Descriptions.Item label="分配说明">
                     {ASSIGNED_BY_META[store.selectedTask.nodeAssignedBy].tip}
@@ -205,7 +255,7 @@ export default function Dashboard() {
                 <Descriptions.Item label="耗时">{store.selectedTask.duration ? `${(store.selectedTask.duration / 1000).toFixed(1)}s` : '-'}</Descriptions.Item>
               </Descriptions>
               <h4 style={{ marginTop: 16 }}>执行日志</h4>
-              <pre style={{ background: '#1f1f1f', padding: 12, borderRadius: 8, fontSize: 12, maxHeight: 300, overflow: 'auto' }}>
+              <pre style={{ background: '#1f1f1f', padding: 12, borderRadius: 8, fontSize: 12, maxHeight: 300, overflow: 'auto', color: '#eee' }}>
                 {store.selectedTask.logs.join('\n')}
               </pre>
             </>
